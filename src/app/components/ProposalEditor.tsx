@@ -377,7 +377,7 @@ export function ProposalEditor({
                           <p>此章节内容缺失</p>
                           <p className="text-sm mt-1">
                             {aiConfig.enabled
-                              ? "点击上方"AI生成"按钮自动生成内容"
+                              ? '点击上方"AI生成"按钮自动生成内容'
                               : "请手动填写或配置AI助手"}
                           </p>
                         </div>
