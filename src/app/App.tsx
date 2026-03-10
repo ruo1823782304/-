@@ -12,14 +12,17 @@ import {
   FileText,
   Filter,
   FolderOpen,
+  HelpCircle,
   Home,
   LayoutDashboard,
   ListChecks,
+  Plus,
   Search,
   Settings2,
   ShieldCheck,
   Target,
   UploadCloud,
+  UserCircle,
   Users,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -54,9 +57,11 @@ import {
   TableHeader,
   TableRow,
 } from "./components/ui/table";
+import { BidLibraryManager, type BidLibraryItem } from "./components/BidLibraryManager";
+import { TenderAnalyzer, type TenderRequirement } from "./components/TenderAnalyzer";
 
 type AuthView = "login" | "register" | "forgot" | "maintenance";
-type PageKey = "home" | "asset" | "tender" | "proposal" | "collaboration" | "data-center" | "compliance";
+type PageKey = "home" | "asset" | "tender" | "proposal" | "collaboration" | "data-center" | "compliance" | "personal";
 type AssetCategory = "qualification" | "performance" | "solution" | "archive" | "winning" | "resume";
 type Role =
   | "管理员"
@@ -95,6 +100,17 @@ type ModelConfig = {
   baichuanKey: string;
 };
 
+type ProjectContext = {
+  activeProjectId: string;
+  projectName: string;
+  tenderFile: { name: string; size: string; format: string } | null;
+  tenderRequirements: TenderRequirement[];
+  tenderOutline: string;
+  lastParsedAt: string | null;
+  proposalCompletedSections: number;
+  proposalTotalSections: number;
+};
+
 const navMenus: { key: PageKey; label: string; icon: ComponentType<{ className?: string }> }[] = [
   { key: "asset", label: "资料管理", icon: FolderOpen },
   { key: "tender", label: "招标处理", icon: FileCheck2 },
@@ -105,29 +121,41 @@ const navMenus: { key: PageKey; label: string; icon: ComponentType<{ className?:
 
 const rolePermissions: Record<Role, { pages: PageKey[]; description: string }> = {
   管理员: {
-    pages: ["home", "asset", "tender", "proposal", "collaboration", "data-center", "compliance"],
+    pages: ["home", "asset", "tender", "proposal", "collaboration", "data-center", "compliance", "personal"],
     description: "可新建项目、任务分发、审查标书、查看全量进度",
   },
   技术标制作人: {
-    pages: ["home", "asset", "tender", "proposal", "collaboration"],
+    pages: ["home", "asset", "tender", "proposal", "collaboration", "personal"],
     description: "负责技术标编制与提交，查看自身代办任务",
   },
   商务制作人: {
-    pages: ["home", "asset", "tender", "proposal", "collaboration"],
+    pages: ["home", "asset", "tender", "proposal", "collaboration", "personal"],
     description: "负责商务标编制与提交，查看自身代办任务",
   },
   机动人员: {
-    pages: ["home", "asset", "collaboration"],
+    pages: ["home", "asset", "collaboration", "personal"],
     description: "配合技术/商务制作，查看自身代办任务",
   },
   初审人员: {
-    pages: ["home", "collaboration", "compliance"],
+    pages: ["home", "collaboration", "compliance", "personal"],
     description: "负责初步审查，处理审查任务",
   },
   复审人员: {
-    pages: ["home", "collaboration", "compliance"],
+    pages: ["home", "collaboration", "compliance", "personal"],
     description: "负责最终复审，处理终审任务",
   },
+};
+
+const roleActionPermissions: Record<
+  Role,
+  { viewPending: boolean; assignTask: boolean; managePeople: boolean; reviewTask: boolean }
+> = {
+  管理员: { viewPending: true, assignTask: true, managePeople: true, reviewTask: true },
+  技术标制作人: { viewPending: false, assignTask: false, managePeople: false, reviewTask: false },
+  商务制作人: { viewPending: false, assignTask: false, managePeople: false, reviewTask: false },
+  机动人员: { viewPending: false, assignTask: false, managePeople: false, reviewTask: false },
+  初审人员: { viewPending: false, assignTask: false, managePeople: false, reviewTask: true },
+  复审人员: { viewPending: false, assignTask: false, managePeople: false, reviewTask: true },
 };
 
 const searchPool = [
@@ -212,6 +240,7 @@ function App() {
   const [searchValue, setSearchValue] = useState("");
   const [activeAssetCategory, setActiveAssetCategory] = useState<AssetCategory>("qualification");
   const [configOpen, setConfigOpen] = useState(false);
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false);
   const [projectTypeFilter, setProjectTypeFilter] = useState("全部");
 
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
@@ -240,6 +269,17 @@ function App() {
   const [uploadedTender, setUploadedTender] = useState<{ name: string; size: string; format: string } | null>(null);
   const [parseProgress, setParseProgress] = useState(0);
   const [isParsing, setIsParsing] = useState(false);
+  const [libraryItems, setLibraryItems] = useState<BidLibraryItem[]>([]);
+  const [projectContext, setProjectContext] = useState<ProjectContext>({
+    activeProjectId: "proj-default",
+    projectName: "银行监管报送平台",
+    tenderFile: null,
+    tenderRequirements: [],
+    tenderOutline: "",
+    lastParsedAt: null,
+    proposalCompletedSections: 0,
+    proposalTotalSections: proposalOutline.flatMap((g) => g.sections).length,
+  });
 
   const permissions = session ? rolePermissions[session.role] : rolePermissions["机动人员"];
   const pageVisible = (page: PageKey) => permissions.pages.includes(page);
@@ -268,9 +308,9 @@ function App() {
   ];
 
   const quickEntries: { label: string; target: PageKey; icon: ComponentType<{ className?: string }> }[] = [
-    { label: "上传资料", target: "asset", icon: UploadCloud },
-    { label: "新建标书", target: "proposal", icon: FileText },
     { label: "解析招标文件", target: "tender", icon: FileCheck2 },
+    { label: "新建标书", target: "proposal", icon: FileText },
+    { label: "上传资料", target: "asset", icon: UploadCloud },
     { label: "我的审批", target: "collaboration", icon: ListChecks },
     { label: "标书模板", target: "proposal", icon: BookOpen },
     { label: "投标复盘", target: "data-center", icon: Target },
@@ -336,6 +376,9 @@ function App() {
       prev.map((a) => (a.username === session.username ? { ...a, password: registerPwd } : a)),
     );
     toast.success("账号维护成功，密码已更新");
+    setMaintenanceOpen(false);
+    setRegisterPwd("");
+    setRegisterConfirmPwd("");
   };
 
   const handleDrop = (toColumn: string) => {
@@ -365,6 +408,11 @@ function App() {
         if (prev >= 100) {
           clearInterval(timer);
           setIsParsing(false);
+          setProjectContext((ctx) => ({
+            ...ctx,
+            tenderFile: uploadedTender,
+            lastParsedAt: new Date().toISOString(),
+          }));
           toast.success("招标文件解析完成");
           return 100;
         }
@@ -373,37 +421,71 @@ function App() {
     }, 220);
   };
 
+  const handleTenderAnalysisComplete = (requirements: TenderRequirement[]) => {
+    const draftOutline = [
+      "投标大纲：",
+      ...requirements.slice(0, 8).map((req, idx) => `${idx + 1}. ${req.title}`),
+    ].join("\n");
+    setProjectContext((ctx) => ({
+      ...ctx,
+      tenderRequirements: requirements,
+      tenderOutline: draftOutline,
+      lastParsedAt: new Date().toISOString(),
+    }));
+    toast.success(`已同步 ${requirements.length} 条招标要求到项目上下文`);
+  };
+
   if (!isAuthed) {
     return (
-      <div className="h-screen w-full overflow-hidden bg-white">
+      <div className="flex h-screen w-full overflow-hidden bg-[#F5F7FA]">
         <Toaster />
-        <div className="grid h-full grid-cols-[45%_55%]">
-          <section className="relative overflow-hidden bg-[#1B365D] text-white">
-            <div className="absolute inset-0 opacity-20 bg-[linear-gradient(120deg,rgba(255,255,255,.3)_1px,transparent_1px),linear-gradient(210deg,rgba(255,255,255,.25)_1px,transparent_1px)] bg-[size:42px_42px]" />
-            <div className="absolute inset-y-0 left-[-10%] w-[120%] opacity-15 bg-[radial-gradient(circle_at_30%_30%,#ffffff_0%,transparent_60%)]" />
+        <div className="grid h-full w-full grid-cols-[45%_55%]">
+          {/* 左侧品牌展示区 - 深空蓝渐变 */}
+          <section
+            className="relative overflow-hidden text-white"
+            style={{
+              background: "linear-gradient(180deg, #165DFF 0%, #0F42C1 100%)",
+            }}
+          >
+            <div
+              className="absolute inset-0 opacity-[0.08]"
+              style={{
+                backgroundImage: `linear-gradient(90deg, rgba(255,255,255,.4) 1px, transparent 1px),
+                  linear-gradient(rgba(255,255,255,.3) 1px, transparent 1px)`,
+                backgroundSize: "42px 42px",
+              }}
+            />
             <div className="relative z-10 flex h-full flex-col items-center justify-center px-10 text-center">
-              <h1 className="text-[28px] font-bold">智慧标书·企业知识中枢</h1>
-              <p className="mt-[10px] text-[16px]">沉淀投标智慧，赋能每一次竞标决策</p>
-              <p className="mt-[20px] text-[18px] font-semibold text-[#FFC107]">智库引领，一击即中</p>
+              <h1 className="text-[28px] font-bold leading-tight">智慧标书・企业知识中枢</h1>
+              <p className="mt-3 text-base">沉淀投标智慧，赋能每一次竞标决策</p>
+              <p className="mt-5 text-[18px] font-semibold" style={{ color: "#FFD166" }}>
+                智库引领，一击即中
+              </p>
               <div className="mt-[30px] grid w-full max-w-[520px] grid-cols-3 gap-3">
-                <InfoGlassCard title="标书数量" value="1268份" />
-                <InfoGlassCard title="成功案例" value="326个" />
+                <InfoGlassCard title="标书数量" value="XXX 份" />
+                <InfoGlassCard title="成功案例" value="XXX 个" />
                 <InfoGlassCard title="行业标准库" value="实时更新" />
               </div>
             </div>
           </section>
 
-          <section className="relative flex items-center justify-center bg-white">
-            <div className="w-[300px] rounded-xl border border-slate-200 bg-white p-6 shadow-md">
+          {/* 右侧登录交互区 */}
+          <section className="relative flex items-center justify-center bg-[#F5F7FA]">
+            <div
+              className="w-full max-w-[380px] rounded-[8px] p-8 shadow-[0_4px_20px_rgba(0,0,0,0.08)] backdrop-blur-xl transition-shadow hover:shadow-[0_6px_24px_rgba(0,0,0,0.1)]"
+              style={{ backgroundColor: "rgba(255,255,255,0.9)" }}
+            >
               {authView === "login" && (
-                <div className="space-y-4">
-                  <p className="text-center text-xl font-semibold text-[#1B365D]">账号登录</p>
-                  <div className="space-y-2">
+                <div className="space-y-5">
+                  <p className="text-center text-xl font-semibold" style={{ color: "#165DFF" }}>
+                    账号登录
+                  </p>
+                  <div className="space-y-3">
                     <Input
                       value={loginUsername}
                       onChange={(e) => setLoginUsername(e.target.value)}
                       placeholder="请输入用户名"
-                      className="focus-visible:ring-[#1B365D]/30"
+                      className="h-10 rounded-[8px] border-[#E4E7ED] bg-white placeholder:text-[#909399] focus-visible:border-[#165DFF] focus-visible:ring-[#165DFF]/20"
                     />
                     <div className="relative">
                       <Input
@@ -411,35 +493,58 @@ function App() {
                         value={loginPassword}
                         onChange={(e) => setLoginPassword(e.target.value)}
                         placeholder="请输入密码"
-                        className="pr-9 focus-visible:ring-[#1B365D]/30"
+                        className="h-10 rounded-[8px] border-[#E4E7ED] bg-white pr-10 placeholder:text-[#909399] focus-visible:border-[#165DFF] focus-visible:ring-[#165DFF]/20"
                       />
                       <button
+                        type="button"
                         onClick={() => setShowPwd((v) => !v)}
-                        className="absolute top-2.5 right-2 text-slate-500 hover:text-slate-700"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#909399] hover:text-[#303133]"
                       >
                         {showPwd ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                       </button>
                     </div>
-                    <div className="flex items-center justify-between text-xs">
-                      <label className="flex items-center gap-1 text-slate-500">
-                        <input type="checkbox" checked={rememberPwd} onChange={(e) => setRememberPwd(e.target.checked)} />
+                    <div className="flex items-center justify-between text-sm">
+                      <label className="flex cursor-pointer items-center gap-2 text-[#909399]">
+                        <input
+                          type="checkbox"
+                          checked={rememberPwd}
+                          onChange={(e) => setRememberPwd(e.target.checked)}
+                          className="rounded border-[#E4E7ED]"
+                        />
                         记住密码
                       </label>
-                      <button className="text-[#1B365D] hover:text-[#10253f]" onClick={() => setAuthView("forgot")}>
+                      <button
+                        type="button"
+                        className="text-[#165DFF] hover:text-[#0F42C1]"
+                        onClick={() => setAuthView("forgot")}
+                      >
                         忘记密码
                       </button>
                     </div>
-                    {loginError && <p className="text-xs text-red-600">{loginError}</p>}
+                    {loginError && (
+                      <p className="text-sm text-red-600">{loginError}</p>
+                    )}
                   </div>
-                  <Button className="h-10 w-full bg-[#1B365D] hover:bg-[#10253f] active:scale-[0.99]" onClick={doLogin}>
+                  <Button
+                    className="h-10 w-full rounded-[8px] bg-[#165DFF] text-white hover:bg-[#0F42C1] active:scale-[0.98]"
+                    onClick={doLogin}
+                  >
                     立即开启
                   </Button>
-                  <div className="flex items-center justify-center gap-3 text-xs">
-                    <button className="text-[#1B365D] hover:text-[#10253f]" onClick={() => setAuthView("register")}>
+                  <div className="flex items-center justify-center gap-3 pt-2 text-sm">
+                    <button
+                      type="button"
+                      className="text-[#165DFF] hover:text-[#0F42C1]"
+                      onClick={() => setAuthView("register")}
+                    >
                       账号注册
                     </button>
-                    <span className="text-slate-300">|</span>
-                    <button className="text-[#1B365D] hover:text-[#10253f]" onClick={() => setAuthView("maintenance")}>
+                    <span className="text-[#E4E7ED]">|</span>
+                    <button
+                      type="button"
+                      className="text-[#165DFF] hover:text-[#0F42C1]"
+                      onClick={() => setAuthView("maintenance")}
+                    >
                       账号维护
                     </button>
                   </div>
@@ -448,28 +553,47 @@ function App() {
 
               {authView === "register" && (
                 <div className="space-y-3">
-                  <p className="text-center text-lg font-semibold text-[#1B365D]">账号注册</p>
-                  <Input value={registerName} onChange={(e) => setRegisterName(e.target.value)} placeholder="用户名" />
-                  <Input type="password" value={registerPwd} onChange={(e) => setRegisterPwd(e.target.value)} placeholder="密码" />
+                  <p className="text-center text-lg font-semibold text-[#165DFF]">账号注册</p>
+                  <Input
+                    value={registerName}
+                    onChange={(e) => setRegisterName(e.target.value)}
+                    placeholder="用户名"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+                  />
+                  <Input
+                    type="password"
+                    value={registerPwd}
+                    onChange={(e) => setRegisterPwd(e.target.value)}
+                    placeholder="密码"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+                  />
                   <Input
                     type="password"
                     value={registerConfirmPwd}
                     onChange={(e) => setRegisterConfirmPwd(e.target.value)}
                     placeholder="确认密码"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
                   />
                   <select
                     value={registerRole}
                     onChange={(e) => setRegisterRole(e.target.value as Role)}
-                    className="h-9 w-full rounded-md border px-2 text-sm"
+                    className="h-10 w-full rounded-[8px] border border-[#E4E7ED] px-3 text-sm"
                   >
                     {Object.keys(rolePermissions).map((r) => (
                       <option key={r}>{r}</option>
                     ))}
                   </select>
-                  <Button className="w-full bg-[#1B365D] hover:bg-[#10253f]" onClick={doRegister}>
+                  <Button
+                    className="w-full rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]"
+                    onClick={doRegister}
+                  >
                     完成注册
                   </Button>
-                  <button className="w-full text-xs text-[#1B365D]" onClick={() => setAuthView("login")}>
+                  <button
+                    type="button"
+                    className="w-full text-sm text-[#165DFF]"
+                    onClick={() => setAuthView("login")}
+                  >
                     返回登录
                   </button>
                 </div>
@@ -477,19 +601,38 @@ function App() {
 
               {authView === "forgot" && (
                 <div className="space-y-3">
-                  <p className="text-center text-lg font-semibold text-[#1B365D]">密码重置</p>
-                  <Input value={registerName} onChange={(e) => setRegisterName(e.target.value)} placeholder="请输入用户名" />
-                  <Input type="password" value={registerPwd} onChange={(e) => setRegisterPwd(e.target.value)} placeholder="请输入新密码" />
+                  <p className="text-center text-lg font-semibold text-[#165DFF]">密码重置</p>
+                  <Input
+                    value={registerName}
+                    onChange={(e) => setRegisterName(e.target.value)}
+                    placeholder="请输入用户名"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+                  />
+                  <Input
+                    type="password"
+                    value={registerPwd}
+                    onChange={(e) => setRegisterPwd(e.target.value)}
+                    placeholder="请输入新密码"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+                  />
                   <Input
                     type="password"
                     value={registerConfirmPwd}
                     onChange={(e) => setRegisterConfirmPwd(e.target.value)}
                     placeholder="确认新密码"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
                   />
-                  <Button className="w-full bg-[#1B365D] hover:bg-[#10253f]" onClick={doResetPassword}>
+                  <Button
+                    className="w-full rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]"
+                    onClick={doResetPassword}
+                  >
                     重置密码
                   </Button>
-                  <button className="w-full text-xs text-[#1B365D]" onClick={() => setAuthView("login")}>
+                  <button
+                    type="button"
+                    className="w-full text-sm text-[#165DFF]"
+                    onClick={() => setAuthView("login")}
+                  >
                     返回登录
                   </button>
                 </div>
@@ -497,26 +640,40 @@ function App() {
 
               {authView === "maintenance" && (
                 <div className="space-y-3">
-                  <p className="text-center text-lg font-semibold text-[#1B365D]">账号维护</p>
-                  <Input value={registerPwd} onChange={(e) => setRegisterPwd(e.target.value)} type="password" placeholder="请输入新密码" />
+                  <p className="text-center text-lg font-semibold text-[#165DFF]">账号维护</p>
+                  <Input
+                    value={registerPwd}
+                    onChange={(e) => setRegisterPwd(e.target.value)}
+                    type="password"
+                    placeholder="请输入新密码"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+                  />
                   <Input
                     value={registerConfirmPwd}
                     onChange={(e) => setRegisterConfirmPwd(e.target.value)}
                     type="password"
                     placeholder="确认新密码"
+                    className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
                   />
-                  <Button className="w-full bg-[#1B365D] hover:bg-[#10253f]" onClick={doMaintenance}>
+                  <Button
+                    className="w-full rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]"
+                    onClick={doMaintenance}
+                  >
                     保存维护信息
                   </Button>
-                  <button className="w-full text-xs text-[#1B365D]" onClick={() => setAuthView("login")}>
+                  <button
+                    type="button"
+                    className="w-full text-sm text-[#165DFF]"
+                    onClick={() => setAuthView("login")}
+                  >
                     返回登录
                   </button>
                 </div>
               )}
             </div>
 
-            <div className="absolute bottom-5 text-[11px] text-slate-400">
-              技术支持：400-800-2026 | <button className="hover:text-[#1B365D]">隐私政策</button>
+            <div className="absolute bottom-5 left-0 right-0 text-center text-xs text-[#909399]">
+              技术支持：XXX-XXXXXXX | <button type="button" className="hover:text-[#165DFF]">隐私政策</button>
             </div>
           </section>
         </div>
@@ -525,120 +682,184 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
+    <div className="flex min-h-screen bg-[#F5F7FA] text-[#303133]">
       <Toaster />
 
-      <header className="fixed top-0 z-50 h-[60px] w-full border-b bg-[#0f3d79] text-white">
-        <div className="mx-auto flex h-full max-w-[1400px] items-center px-5">
-          <button onClick={() => setActivePage("home")} className="flex w-[200px] items-center gap-2 text-left">
-            <LayoutDashboard className="h-6 w-6" />
-            <div>
-              <p className="text-base font-semibold leading-5">智能标书库</p>
-              <p className="text-xs text-blue-100">高效 · 便捷 · 合规</p>
-            </div>
-          </button>
-
-          <Button
-            variant="secondary"
-            className="mr-2 h-8 w-[84px] bg-white/90 text-[#0f3d79] hover:bg-white"
-            onClick={() => setActivePage("home")}
-          >
-            <Home className="mr-1 h-4 w-4" />
-            首页
-          </Button>
-
-          <nav className="mx-1 flex flex-1 items-center justify-center gap-1">
-            {navMenus
-              .filter((menu) => pageVisible(menu.key))
-              .map((menu) => {
-                const Icon = menu.icon;
-                const active = activePage === menu.key;
+      {/* 左侧导航栏 240px Mac OS 侧边栏风格 */}
+      <aside className="fixed left-0 top-0 z-40 h-screen w-[240px] flex-col border-r border-[#E4E7ED] bg-[#F5F7FA] flex">
+        <div className="flex flex-1 flex-col overflow-y-auto py-4">
+          <div className="px-5 pb-2">
+            <button
+              type="button"
+              onClick={() => setActivePage("home")}
+              className="flex items-center gap-2 text-left"
+            >
+              <LayoutDashboard className="h-5 w-5 shrink-0 text-[#165DFF]" />
+              <span className="text-lg font-bold text-[#165DFF]">智能标书库</span>
+            </button>
+          </div>
+          <p className="px-5 pt-4 pb-2 text-xs font-medium uppercase tracking-wider text-[#909399]">MENU</p>
+          <nav className="space-y-0.5 px-3">
+            {[
+              { key: "tender" as PageKey, label: "标书解析", icon: FileCheck2 },
+              { key: "proposal" as PageKey, label: "标书编制", icon: FileText },
+              { key: "asset" as PageKey, label: "企业库", icon: FolderOpen },
+              { key: "collaboration" as PageKey, label: "项目协作", icon: Users },
+              { key: "data-center" as PageKey, label: "数据中心", icon: BarChart3 },
+            ]
+              .filter((item) => pageVisible(item.key))
+              .map((item) => {
+                const Icon = item.icon;
+                const active = activePage === item.key;
                 return (
                   <button
-                    key={menu.key}
-                    onClick={() => setActivePage(menu.key)}
-                    className={`flex items-center gap-1 rounded-md px-3 py-2 text-sm ${
-                      active ? "bg-white text-[#0f3d79]" : "text-blue-50 hover:bg-blue-800"
+                    key={item.key}
+                    type="button"
+                    onClick={() => setActivePage(item.key)}
+                    className={`flex h-10 w-full items-center gap-2 rounded-[8px] px-5 text-sm transition-colors ${
+                      active
+                        ? "bg-[#165DFF] text-white"
+                        : "text-[#303133] hover:bg-[#E4E7ED]"
                     }`}
                   >
-                    <Icon className="h-4 w-4" />
-                    {menu.label}
+                    <Icon className="h-4 w-4 shrink-0" />
+                    {item.label}
                   </button>
                 );
               })}
           </nav>
-
-          <div className="relative mr-2 w-[250px]">
-            <Search className="absolute top-2.5 left-2 h-4 w-4 text-slate-500" />
-            <Input
-              value={searchValue}
-              onChange={(e) => setSearchValue(e.target.value)}
-              placeholder="搜索资料/模板/项目/标书"
-              className="h-9 border-0 bg-white pl-8 text-slate-900"
-            />
-            {suggestList.length > 0 && (
-              <div className="absolute top-10 w-full rounded-md border bg-white p-1 shadow-lg">
-                {suggestList.map((item) => (
-                  <button
-                    key={item}
-                    className="block w-full rounded px-2 py-1 text-left text-xs text-slate-700 hover:bg-slate-100"
-                    onClick={() => {
-                      setSearchValue(item);
-                      setActivePage("data-center");
-                      toast.success("已跳转至检索结果页（数据中心）");
-                    }}
-                  >
-                    {item}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <Button
-            variant="secondary"
-            className="mr-2 h-8 w-[100px] bg-blue-50 text-[#0f3d79] hover:bg-blue-100"
-            onClick={() => setConfigOpen(true)}
-            title="配置"
-          >
-            <Settings2 className="mr-1 h-4 w-4" />
-            配置
-          </Button>
-
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="flex w-[150px] items-center justify-end gap-2 rounded px-2 py-1 hover:bg-blue-800">
-                <Avatar className="h-7 w-7 border border-blue-100">
-                  <AvatarFallback className="bg-blue-100 text-xs text-blue-900">
-                    {session?.username.slice(0, 2)}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="text-sm">{session?.username}</span>
-                <ChevronDown className="h-4 w-4" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>个人中心</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => setAuthView("maintenance")}>个人设置</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setActivePage("collaboration")}>我的任务</DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                onClick={() => {
-                  setIsAuthed(false);
-                  setSession(null);
-                  setAuthView("login");
-                  toast.success("已退出登录");
-                }}
-              >
-                退出登录
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <p className="px-5 pt-6 pb-2 text-xs font-medium uppercase tracking-wider text-[#909399]">ACCOUNT</p>
+          <nav className="space-y-0.5 px-3">
+            <button
+              type="button"
+              onClick={() => setActivePage("personal")}
+              className={`flex h-10 w-full items-center gap-2 rounded-[8px] px-5 text-sm hover:bg-[#E4E7ED] ${
+                activePage === "personal" ? "bg-[#E8F0FF] text-[#165DFF]" : "text-[#303133]"
+              }`}
+            >
+              <UserCircle className="h-4 w-4 shrink-0" />
+              个人中心
+            </button>
+            <button
+              type="button"
+              onClick={() => setMaintenanceOpen(true)}
+              className="flex h-10 w-full items-center gap-2 rounded-[8px] px-5 text-sm text-[#303133] hover:bg-[#E4E7ED]"
+            >
+              <Settings2 className="h-4 w-4 shrink-0" />
+              编辑资料
+            </button>
+          </nav>
+          <p className="px-5 pt-6 pb-2 text-xs font-medium uppercase tracking-wider text-[#909399]">OTHER</p>
+          <nav className="space-y-0.5 px-3">
+            <button
+              type="button"
+              onClick={() => setConfigOpen(true)}
+              className="flex h-10 w-full items-center gap-2 rounded-[8px] px-5 text-sm text-[#303133] hover:bg-[#E4E7ED]"
+            >
+              <Settings2 className="h-4 w-4 shrink-0" />
+              设置
+            </button>
+            <button
+              type="button"
+              onClick={() => toast.info("帮助文档（敬请期待）")}
+              className="flex h-10 w-full items-center gap-2 rounded-[8px] px-5 text-sm text-[#303133] hover:bg-[#E4E7ED]"
+            >
+              <HelpCircle className="h-4 w-4 shrink-0" />
+              帮助
+            </button>
+          </nav>
         </div>
-      </header>
+      </aside>
 
-      <main className="mx-auto max-w-[1400px] px-5 pb-[70px] pt-[72px]">
+      <div className="flex min-h-screen flex-1 flex-col pl-[240px]">
+        {/* 顶部导航栏 64px 磨砂玻璃 */}
+        {/* 顶部导航栏 64px 磨砂玻璃 */}
+        <header className="fixed top-0 left-[240px] right-0 z-30 flex h-16 items-center border-b border-[#E4E7ED]/50 bg-[rgba(255,255,255,0.9)] px-5 shadow-[0_2px_12px_rgba(0,0,0,0.05)] backdrop-blur-md">
+          <div className="mx-auto flex h-full w-full max-w-[1400px] items-center gap-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9 rounded-[8px] gap-1.5 text-[#303133] hover:bg-[#F0F2F5]"
+              onClick={() => setActivePage("home")}
+            >
+              <Home className="h-4 w-4" />
+              首页
+            </Button>
+            <div className="relative flex-1 max-w-[600px]">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#909399]" />
+              <Input
+                value={searchValue}
+                onChange={(e) => setSearchValue(e.target.value)}
+                placeholder="搜索资料、模板、项目、标书…"
+                className="h-9 w-full rounded-[8px] border-[#E4E7ED] bg-white pl-9 text-sm placeholder:text-[#909399] focus-visible:border-[#165DFF]"
+              />
+              {suggestList.length > 0 && (
+                <div className="absolute top-full left-0 right-0 z-50 mt-1 rounded-[8px] border border-[#E4E7ED] bg-white p-1 shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+                  {suggestList.map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      className="block w-full rounded-[4px] px-2 py-1.5 text-left text-xs text-[#303133] hover:bg-[#F0F2F5]"
+                      onClick={() => {
+                        setSearchValue(item);
+                        setActivePage("data-center");
+                        toast.success("已跳转至检索结果页（数据中心）");
+                      }}
+                    >
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="ml-auto flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9 rounded-[8px] gap-1.5 text-[#303133] hover:bg-[#F0F2F5]"
+              onClick={() => setConfigOpen(true)}
+            >
+              <Settings2 className="h-4 w-4" />
+              配置
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex items-center gap-2 rounded-[8px] px-2 py-1.5 hover:bg-[#F0F2F5]"
+                >
+                  <Avatar className="h-8 w-8 border border-[#E4E7ED]">
+                    <AvatarFallback className="bg-[#E4E7ED] text-sm text-[#303133]">
+                      {session?.username.slice(0, 2)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span className="text-sm text-[#303133]">{session?.username}</span>
+                  <ChevronDown className="h-4 w-4 text-[#909399]" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="rounded-[12px] border-[#E4E7ED] bg-[rgba(255,255,255,0.98)] shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+                <DropdownMenuLabel>个人中心</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => setMaintenanceOpen(true)}>个人设置</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setActivePage("collaboration")}>我的任务</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => {
+                    setIsAuthed(false);
+                    setSession(null);
+                    setAuthView("login");
+                    toast.success("已退出登录");
+                  }}
+                >
+                  退出登录
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            </div>
+          </div>
+        </header>
+
+      <main className="flex-1 px-5 pb-6 pt-[80px]">
         {activePage === "home" && (
           <HomePage
             board={filteredBoard}
@@ -655,37 +876,49 @@ function App() {
         )}
 
         {activePage === "asset" && (
-          <AssetPage activeCategory={activeAssetCategory} onCategoryChange={setActiveAssetCategory} />
+          <AssetPage
+            activeCategory={activeAssetCategory}
+            onCategoryChange={setActiveAssetCategory}
+            libraryItems={libraryItems}
+            onLibraryUpdate={setLibraryItems}
+          />
         )}
         {activePage === "tender" && (
           <TenderPage
             uploadedTender={uploadedTender}
-            onUploadTender={setUploadedTender}
+            onUploadTender={(fileMeta) => {
+              setUploadedTender(fileMeta);
+              setProjectContext((ctx) => ({ ...ctx, tenderFile: fileMeta }));
+            }}
             parseProgress={parseProgress}
             isParsing={isParsing}
             onParse={triggerParse}
             onGoCompliance={() => setActivePage("compliance")}
+            onNextStep={() => setActivePage("proposal")}
+            onAnalysisComplete={handleTenderAnalysisComplete}
           />
         )}
-        {activePage === "proposal" && <ProposalPage />}
-        {activePage === "collaboration" && <CollaborationPage role={session?.role ?? "机动人员"} />}
+        {activePage === "proposal" && (
+          <ProposalPage
+            projectContext={projectContext}
+            onProjectContextUpdate={(next) => setProjectContext((ctx) => ({ ...ctx, ...next }))}
+          />
+        )}
+        {activePage === "collaboration" && (
+          <CollaborationPage role={session?.role ?? "机动人员"} projectContext={projectContext} />
+        )}
         {activePage === "compliance" && <CompliancePage />}
-        {activePage === "data-center" && <DataCenterPage />}
+        {activePage === "data-center" && <DataCenterPage projectContext={projectContext} />}
+        {activePage === "personal" && (
+          <PersonalCenterPage
+            onGoToCompleted={() => setActivePage("collaboration")}
+            onGoToPending={() => setActivePage("collaboration")}
+          />
+        )}
       </main>
 
-      <footer className="fixed bottom-0 w-full border-t bg-slate-200/95 text-xs text-slate-600">
-        <div className="mx-auto flex h-[50px] max-w-[1400px] items-center justify-between px-5">
-          <span>系统版本：V1.2.0</span>
-          <span>技术支持：400-800-2026 / support@bidding-ai.com</span>
-          <div className="flex items-center gap-4">
-            <button className="hover:text-blue-700">隐私政策</button>
-            <button className="hover:text-blue-700">使用说明</button>
-          </div>
-        </div>
-      </footer>
-
       <Dialog open={configOpen} onOpenChange={setConfigOpen}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="max-w-3xl rounded-[12px] border-[#E4E7ED] bg-[rgba(255,255,255,0.98)] p-6 shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
           <DialogHeader>
             <DialogTitle>系统配置</DialogTitle>
             <DialogDescription>包含人员配置（仅查看当前角色）和模型配置（coding plan、API-Key、模型切换）。</DialogDescription>
@@ -778,15 +1011,49 @@ function App() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={maintenanceOpen} onOpenChange={setMaintenanceOpen}>
+        <DialogContent className="max-w-md rounded-[12px] border-[#E4E7ED] bg-[rgba(255,255,255,0.98)] p-6 shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+          <DialogHeader>
+            <DialogTitle className="text-[#165DFF]">账号维护</DialogTitle>
+            <DialogDescription>修改当前账号密码</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              value={registerPwd}
+              onChange={(e) => setRegisterPwd(e.target.value)}
+              type="password"
+              placeholder="请输入新密码"
+              className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+            />
+            <Input
+              value={registerConfirmPwd}
+              onChange={(e) => setRegisterConfirmPwd(e.target.value)}
+              type="password"
+              placeholder="确认新密码"
+              className="rounded-[8px] border-[#E4E7ED] focus-visible:border-[#165DFF]"
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]"
+              onClick={doMaintenance}
+            >
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      </div>
     </div>
   );
 }
 
 function InfoGlassCard({ title, value }: { title: string; value: string }) {
   return (
-    <div className="rounded-lg border border-white/30 bg-white/12 p-3 text-left backdrop-blur-sm">
-      <p className="text-xs text-white/85">{title}</p>
-      <p className="mt-1 text-base font-semibold">{value}</p>
+    <div className="rounded-[8px] border border-white/20 bg-white/15 p-3 text-left backdrop-blur-sm">
+      <p className="text-xs text-white/90">{title}</p>
+      <p className="mt-1 text-base font-semibold text-white">{value}</p>
     </div>
   );
 }
@@ -815,21 +1082,27 @@ function HomePage({
   onRiskClick: (v: PageKey) => void;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="mx-auto max-w-[1400px] space-y-4">
       <div className="grid grid-cols-5 gap-4">
-        <Card className="col-span-3 h-[400px]">
-          <CardHeader className="pb-2">
+        {/* 项目进度看板 60% */}
+        <Card className="col-span-3 h-[400px] rounded-[12px] border-[#E4E7ED] bg-[rgba(255,255,255,0.9)] shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+          <CardHeader className="pb-2 px-6 pt-6">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base">项目进度看板</CardTitle>
+              <CardTitle className="text-base font-bold text-[#303133]">项目进度</CardTitle>
               <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" className="h-8" onClick={() => toast.success("已打开筛选条件（示意）")}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 rounded-[8px] border-[#E4E7ED] hover:bg-[#F0F2F5]"
+                  onClick={() => toast.success("已打开筛选条件（示意）")}
+                >
                   <Filter className="mr-1 h-3.5 w-3.5" />
                   筛选
                 </Button>
                 <select
                   value={projectTypeFilter}
                   onChange={(e) => setProjectTypeFilter(e.target.value)}
-                  className="h-8 rounded border px-2 text-xs"
+                  className="h-8 rounded-[8px] border border-[#E4E7ED] px-2 text-xs text-[#303133]"
                 >
                   {["全部", "信息化", "云平台", "金融", "安防", "医疗", "工业"].map((i) => (
                     <option key={i}>{i}</option>
@@ -838,7 +1111,7 @@ function HomePage({
               </div>
             </div>
           </CardHeader>
-          <CardContent className="grid h-[320px] grid-cols-4 gap-2">
+          <CardContent className="grid h-[320px] grid-cols-4 gap-2 px-6 pb-6">
             {[
               { title: "待启动", key: "pending" },
               { title: "进行中", key: "ongoing" },
@@ -847,24 +1120,25 @@ function HomePage({
             ].map((column) => (
               <div
                 key={column.key}
-                className="rounded bg-slate-50 p-2"
+                className="rounded-[8px] bg-[#F0F2F5] p-2"
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={() => onDrop(column.key)}
               >
-                <p className="mb-2 text-xs font-semibold text-slate-600">{column.title}</p>
+                <p className="mb-2 text-xs font-semibold text-[#909399]">{column.title}</p>
                 <div className="space-y-2">
                   {board[column.key].map((item) => (
                     <button
                       key={item.id}
+                      type="button"
                       draggable
                       onDragStart={() => setDragMeta({ from: column.key, projectId: item.id })}
                       onClick={onProjectClick}
-                      className="w-full rounded border bg-white p-2 text-left text-xs hover:border-blue-400"
+                      className="w-full rounded-[8px] border border-[#E4E7ED] bg-white p-2 text-left text-xs transition-shadow hover:border-[#165DFF]/50 hover:shadow-[0_2px_8px_rgba(0,0,0,0.06)]"
                     >
-                      <p className="line-clamp-1 font-medium">{item.name}</p>
-                      <p className="mt-1 text-slate-500">负责人：{item.owner}</p>
-                      <p className="text-slate-500">截止：{item.deadline}</p>
-                      <p className="text-blue-700">进度：{item.progress}</p>
+                      <p className="line-clamp-1 font-medium text-[#303133]">{item.name}</p>
+                      <p className="mt-1 text-[#909399]">负责人：{item.owner}</p>
+                      <p className="text-[#909399]">截止：{item.deadline}</p>
+                      <p className="text-[#165DFF]">进度：{item.progress}</p>
                     </button>
                   ))}
                 </div>
@@ -873,18 +1147,20 @@ function HomePage({
           </CardContent>
         </Card>
 
-        <Card className="col-span-2 h-[400px]">
-          <CardHeader>
-            <CardTitle className="text-base">常用功能快捷入口</CardTitle>
+        {/* 常用功能快捷入口 40% */}
+        <Card className="col-span-2 h-[400px] rounded-[12px] border-[#E4E7ED] bg-[rgba(255,255,255,0.9)] shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+          <CardHeader className="px-6 pt-6">
+            <CardTitle className="text-base font-bold text-[#303133]">常用功能</CardTitle>
           </CardHeader>
-          <CardContent className="grid h-[320px] grid-cols-3 gap-3">
+          <CardContent className="grid h-[320px] grid-cols-3 gap-3 px-6 pb-6">
             {quickEntries.map((entry) => {
               const Icon = entry.icon;
               return (
                 <button
                   key={entry.label}
+                  type="button"
                   onClick={() => onQuickClick(entry.target)}
-                  className="flex flex-col items-center justify-center rounded bg-[#1f5ca8] text-white hover:bg-[#154680]"
+                  className="flex flex-col items-center justify-center rounded-[8px] bg-[#F0F2F5] text-[#303133] transition-colors hover:bg-[#165DFF] hover:text-white"
                 >
                   <Icon className="mb-2 h-5 w-5" />
                   <span className="text-xs">{entry.label}</span>
@@ -895,16 +1171,18 @@ function HomePage({
         </Card>
       </div>
 
-      <Card className="h-[80px] border-red-300">
-        <CardContent className="flex h-full items-center gap-3">
-          <AlertTriangle className="h-5 w-5 text-red-600" />
-          <p className="text-sm font-semibold text-red-700">风险提示</p>
+      {/* 风险预警提示 */}
+      <Card className="h-[80px] rounded-[12px] border-[#E4E7ED] border-l-4 border-l-red-500 bg-[rgba(255,255,255,0.9)] shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+        <CardContent className="flex h-full items-center gap-3 px-6">
+          <AlertTriangle className="h-5 w-5 shrink-0 text-red-500" />
+          <p className="text-sm font-semibold text-red-600">风险提示</p>
           <div className="flex flex-1 gap-2 overflow-x-auto">
             {risks.map((risk) => (
               <button
                 key={risk.text}
+                type="button"
                 onClick={() => onRiskClick(risk.target)}
-                className={`rounded px-2 py-1 text-xs ${
+                className={`rounded-[4px] px-2 py-1 text-xs ${
                   risk.level === "high" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"
                 }`}
               >
@@ -915,15 +1193,16 @@ function HomePage({
         </CardContent>
       </Card>
 
-      <Card className="h-[150px]">
-        <CardHeader className="pb-1">
-          <CardTitle className="text-base">数据概览</CardTitle>
+      {/* 数据概览 */}
+      <Card className="rounded-[12px] border-[#E4E7ED] bg-[rgba(255,255,255,0.9)] shadow-[0_4px_20px_rgba(0,0,0,0.08)]">
+        <CardHeader className="pb-1 px-6 pt-6">
+          <CardTitle className="text-base font-bold text-[#303133]">数据概览</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-4 gap-3">
-          <DataCard title="本月投标项目数" value="36" trend="+8%" color="bg-blue-500" />
-          <DataCard title="中标率" value="41%" trend="+3.1%" color="bg-emerald-500" />
-          <DataCard title="标书编制平均耗时" value="2.8天" trend="-0.6天" color="bg-violet-500" />
-          <DataCard title="资料入库数量" value="1,286" trend="+125" color="bg-amber-500" />
+        <CardContent className="grid grid-cols-4 gap-3 px-6 pb-6">
+          <DataCard title="本月投标项目数" value="36" trend="+8%" color="bg-[#165DFF]" />
+          <DataCard title="中标率" value="41%" trend="+3.1%" color="bg-[#FFD166]" />
+          <DataCard title="标书编制平均耗时" value="2.8天" trend="-0.6天" color="bg-[#165DFF]" />
+          <DataCard title="资料入库数量" value="1,286" trend="+125" color="bg-[#FFD166]" />
         </CardContent>
       </Card>
     </div>
@@ -953,9 +1232,13 @@ const handleGenericUpload = (message: string = "文件已选择", accept: string
 function AssetPage({
   activeCategory,
   onCategoryChange,
+  libraryItems,
+  onLibraryUpdate,
 }: {
   activeCategory: AssetCategory;
   onCategoryChange: (v: AssetCategory) => void;
+  libraryItems: BidLibraryItem[];
+  onLibraryUpdate: (items: BidLibraryItem[]) => void;
 }) {
   const [qualificationView, setQualificationView] = useState<"main" | "upload" | "credit">("main");
   const [resumeDialog, setResumeDialog] = useState(false);
@@ -1276,6 +1559,9 @@ function AssetPage({
                 heads={["项目名称", "客户名称", "机构类型", "采购模块", "标书是否收费", "上传人", "上传时间", "操作", "是否中标"]}
                 rows={[["银行监管报送平台", "XX银行", "城商行", "1104", "否", "周芷若", "2026-03-09", "预览/下载/删除", "进行中"]]}
               />
+              <div className="pt-2">
+                <BidLibraryManager library={libraryItems} onLibraryUpdate={onLibraryUpdate} />
+              </div>
             </div>
           )}
 
@@ -1370,6 +1656,624 @@ function AssetPage({
   );
 }
 
+/** 基础信息：左半边结构化信息 + 右半边招标原文（参考文档解析界面） */
+function TenderBasicInfoPanel() {
+  const [basicSubTab, setBasicSubTab] = useState<"tender" | "project" | "time" | "other" | "purchase">("tender");
+  const basicSubTabs = [
+    { value: "tender" as const, label: "招标人/代理信息" },
+    { value: "project" as const, label: "项目信息" },
+    { value: "time" as const, label: "关键时间/内容" },
+    { value: "other" as const, label: "其他信息" },
+    { value: "purchase" as const, label: "采购要求" },
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      {/* 左半边：结构化信息 */}
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <Tabs value={basicSubTab} onValueChange={(v) => setBasicSubTab(v as typeof basicSubTab)} className="flex-1">
+          <TabsList className="mb-3 w-full justify-start rounded-[8px] bg-[#F0F2F5] p-1">
+            {basicSubTabs.map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value} className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                {tab.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+          <TabsContent value="tender" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">招标人</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">招标人联系方式</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>名称</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>联系电话</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>地址</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>网址</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>商务联系人</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>技术联系人</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>电子邮件</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">项目联系方式</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">名称</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">联系电话</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>项目联系人</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+          <TabsContent value="project" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">项目编号</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">项目基本情况</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>项目编号</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>项目概况与招标范围</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">招标控制价</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">是否接受联合体投标</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+          </TabsContent>
+          <TabsContent value="time" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">投标文件递交截止日期</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">投标文件递交地点</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">开标时间</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">开标地点</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">澄清招标文件的截止时间</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">投标有效期</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">信息公示媒介</p>
+              <div className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</div>
+            </div>
+          </TabsContent>
+          <TabsContent value="other" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">投标费用承担</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">是否退还投标文件</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">偏离</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">评标办法</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">定标方法</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+          </TabsContent>
+          <TabsContent value="purchase" className="mt-0 space-y-4">
+            <p className="tender-fixed-label text-sm">第四章 技术服务要求</p>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">11. 采购背景</p>
+              <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">12. 系统功能要求</p>
+              <div className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] p-3">
+                <div className="mt-2 overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="tender-fixed-label text-[#303133]">序号</TableHead>
+                        <TableHead className="tender-fixed-label text-[#303133]">功能模块</TableHead>
+                        <TableHead className="tender-fixed-label text-[#303133]">要求说明</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      <TableRow><TableCell>1</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                      <TableRow><TableCell>2</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
+/** 资格要求：左半边 资格性和符合性审查 + 资质条目，右半边招标原文 */
+function TenderQualifyPanel() {
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+        <div className="rounded-[8px] border border-[#E4E7ED] bg-white p-4">
+          <Button className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]" onClick={() => toast.success("资格性和符合性审查（示意）")}>
+            资格性和符合性审查
+          </Button>
+        </div>
+        <ul className="mt-4 space-y-3">
+          <li className="tender-fixed-label rounded-[8px] border border-[#E4E7ED] px-3 py-2 text-sm text-[#303133]">有效的营业执照</li>
+          <li className="tender-fixed-label rounded-[8px] border border-[#E4E7ED] px-3 py-2 text-sm text-[#303133]">近三年未被列入国家企业信用信息公示系统经营异常名录和严重违法失信企业名单</li>
+          <li className="tender-fixed-label rounded-[8px] border border-[#E4E7ED] px-3 py-2 text-sm text-[#303133]">具有计算机软件开发相应的经营范围</li>
+        </ul>
+      </div>
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
+/** 评审要求：子项 评分标准/开标/评标/定标/中标要求 */
+function TenderReviewPanel() {
+  const [reviewSubTab, setReviewSubTab] = useState<"score" | "open" | "eval" | "decide" | "win">("score");
+  const reviewSubTabs = [
+    { value: "score" as const, label: "评分标准" },
+    { value: "open" as const, label: "开标" },
+    { value: "eval" as const, label: "评标" },
+    { value: "decide" as const, label: "定标" },
+    { value: "win" as const, label: "中标要求" },
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+        <Tabs value={reviewSubTab} onValueChange={(v) => setReviewSubTab(v as typeof reviewSubTab)} className="flex-1">
+          <TabsList className="mb-3 w-full justify-start rounded-[8px] bg-[#F0F2F5] p-1">
+            {reviewSubTabs.map((tab) => (
+              <TabsTrigger key={tab.value} value={tab.value} className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">{tab.label}</TabsTrigger>
+            ))}
+          </TabsList>
+          <TabsContent value="score" className="mt-0">
+            <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="tender-fixed-label text-[#303133]">序号</TableHead>
+                    <TableHead className="tender-fixed-label text-[#303133]">主要内容</TableHead>
+                    <TableHead className="tender-fixed-label text-[#303133]">分值</TableHead>
+                    <TableHead className="tender-fixed-label text-[#303133]">评分标准</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  <TableRow><TableCell>1</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  <TableRow><TableCell>2</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  <TableRow><TableCell>3</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </div>
+          </TabsContent>
+          <TabsContent value="open" className="mt-0 space-y-4">
+            <InfoCard title="提交截止时间" content="—" />
+            <InfoCard title="提交地点" content="—" />
+            <InfoCard title="接收人" content="—" />
+            <InfoCard title="联系方式" content="—" />
+            <InfoCard title="拒收情形" content="—" />
+          </TabsContent>
+          <TabsContent value="eval" className="mt-0 space-y-4">
+            <InfoCard title="评标原则" content="—" />
+            <InfoCard title="评标办法" content="—" />
+            <InfoCard title="中标候选人确定规则" content="—" />
+            <InfoCard title="废标情形(技术标)" content="—" />
+            <InfoCard title="报价有效性要求" content="—" />
+          </TabsContent>
+          <TabsContent value="decide" className="mt-0 space-y-4">
+            <InfoCard title="定标主体与依据" content="—" />
+            <InfoCard title="定标结果通知" content="—" />
+          </TabsContent>
+          <TabsContent value="win" className="mt-0 space-y-4">
+            <InfoCard title="中标通知书效力" content="—" />
+            <InfoCard title="合同签订时限与地点" content="—" />
+            <InfoCard title="合同签订依据" content="—" />
+            <InfoCard title="履约禁止性要求" content="—" />
+          </TabsContent>
+        </Tabs>
+      </div>
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
+function InfoCard({ title, content }: { title: string; content: string }) {
+  return (
+    <div>
+      <p className="tender-fixed-label mb-1 text-sm">{title}</p>
+      <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#606266]">{content}</p>
+    </div>
+  );
+}
+
+/** 招标原文右侧面板：大纲 + 原文内容（复用） */
+function TenderDocOutlinePanel() {
+  return (
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+      <div className="border-b border-[#E4E7ED] px-4 py-3">
+        <h4 className="tender-fixed-label text-sm">招标原文</h4>
+      </div>
+      <div className="flex-1 overflow-auto p-4">
+        <div className="text-sm leading-relaxed text-[#303133]">
+          <p className="tender-fixed-label mb-1 text-xs">大纲</p>
+          <p className="mb-1">招标文件</p>
+          <p className="mb-1 text-[#909399]">项目编号: —</p>
+          <p className="mb-1 text-[#909399]">项目名称: —</p>
+          <p className="mb-2 font-medium">▼ 第一章 投标邀请书</p>
+          <p className="ml-2 mb-1 text-[#909399]">一、项目编号: —</p>
+          <p className="ml-2 mb-1 text-[#909399]">二、项目名称: —</p>
+          <p className="ml-2 mb-1 font-medium text-[#165DFF]">三、项目概况与招标范围</p>
+          <p className="ml-2 mb-1">四、招标文件的获取</p>
+          <p className="ml-2 mb-1">五、投标文件的提交</p>
+          <p className="mb-2 font-medium">▼ 第二章 投标人须知</p>
+          <p className="ml-2 mb-1">一、总则</p>
+          <p className="ml-2 mb-1">二、招标文件</p>
+          <p className="ml-2 mb-1">三、投标文件</p>
+          <p className="ml-2 mb-1">四、投标</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 投标文件要求：子项 组成/编制/密封和标记/递交/修改与撤回/投标有效期 */
+function TenderBidDocPanel() {
+  const [bidDocSub, setBidDocSub] = useState<"compose" | "prep" | "seal" | "submit" | "modify" | "validity">("compose");
+  const subTabs = [
+    { value: "compose" as const, label: "投标文件的组成" },
+    { value: "prep" as const, label: "投标文件的编制" },
+    { value: "seal" as const, label: "投标文件的密封和标记" },
+    { value: "submit" as const, label: "投标文件的递交" },
+    { value: "modify" as const, label: "投标文件的修改与撤回" },
+    { value: "validity" as const, label: "投标有效期" },
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+        <Tabs value={bidDocSub} onValueChange={(v) => setBidDocSub(v as typeof bidDocSub)} className="flex-1">
+          <TabsList className="mb-3 w-full flex-wrap justify-start rounded-[8px] bg-[#F0F2F5] p-1">
+            {subTabs.map((t) => (
+              <TabsTrigger key={t.value} value={t.value} className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">{t.label}</TabsTrigger>
+            ))}
+          </TabsList>
+          <TabsContent value="compose" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">商务投标书</p>
+              <ul className="space-y-1 text-sm text-[#909399]">
+                <li>· —</li>
+                <li>· —</li>
+              </ul>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">技术投标书</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>投标函</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>资质文件及相关文件</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>技术投标方案</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+          <TabsContent value="prep" className="mt-0 space-y-3 text-sm text-[#909399]">
+            <p>—</p>
+          </TabsContent>
+          <TabsContent value="seal" className="mt-0 space-y-3 text-sm text-[#909399]">
+            <p>—</p>
+          </TabsContent>
+          <TabsContent value="submit" className="mt-0 space-y-4">
+            <InfoCard title="递交截止时间" content="—" />
+            <InfoCard title="递交地点" content="—" />
+            <InfoCard title="接收人" content="—" />
+            <InfoCard title="联系方式" content="—" />
+            <div>
+              <p className="tender-fixed-label mb-1 text-sm">注意事项</p>
+              <ul className="list-inside list-disc space-y-1 rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">
+                <li>—</li>
+              </ul>
+            </div>
+          </TabsContent>
+          <TabsContent value="modify" className="mt-0 space-y-3 text-sm text-[#909399]">
+            <p>—</p>
+          </TabsContent>
+          <TabsContent value="validity" className="mt-0">
+            <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-2 text-sm text-[#909399]">—</p>
+          </TabsContent>
+        </Tabs>
+        <div className="mt-4 flex items-center justify-between border-t border-[#E4E7ED] pt-4">
+          <Button variant="outline" className="rounded-[8px]" onClick={() => toast.success("已导出解析报告（示意）")}>导出解析报告</Button>
+          <Button className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]" onClick={() => toast.success("下一步（示意）")}>下一步</Button>
+        </div>
+      </div>
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
+/** 无效标与废标项：子项 废标项/不得存在的情形/否决和无效投标情形 */
+function TenderInvalidPanel() {
+  const [invalidSub, setInvalidSub] = useState<"invalid" | "forbid" | "reject">("invalid");
+  const subTabs = [
+    { value: "invalid" as const, label: "废标项" },
+    { value: "forbid" as const, label: "不得存在的情形" },
+    { value: "reject" as const, label: "否决和无效投标情形" },
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+        <Tabs value={invalidSub} onValueChange={(v) => setInvalidSub(v as typeof invalidSub)} className="flex-1">
+          <TabsList className="mb-3 w-full justify-start rounded-[8px] bg-[#F0F2F5] p-1">
+            {subTabs.map((t) => (
+              <TabsTrigger key={t.value} value={t.value} className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">{t.label}</TabsTrigger>
+            ))}
+          </TabsList>
+          <TabsContent value="invalid" className="mt-0 space-y-3 text-sm text-[#909399]">
+            <p>—</p>
+          </TabsContent>
+          <TabsContent value="forbid" className="mt-0 space-y-3 text-sm text-[#909399]">
+            <p>—</p>
+          </TabsContent>
+          <TabsContent value="reject" className="mt-0">
+            <p className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] px-3 py-4 text-sm text-[#909399]">—</p>
+          </TabsContent>
+        </Tabs>
+      </div>
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
+/** 应标需提交文件：证明材料 + 清单 */
+function TenderSubmitPanel() {
+  const items = [
+    "有效的营业执照",
+    "国家企业信用信息公示系统经营异常名录和严重违法失信企业名单查询结果（近三年）",
+    "CMMI3级及以上资质证书",
+    "项目经理简历、社保证明（加盖公章）",
+    "免费保修期承诺函（明确期限：1年/2年/3年及以上）",
+    "软件著作权登记证书",
+    "信创适配认证证书",
+    "其他资质证书",
+  ];
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+        <div className="mb-4">
+          <Button className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]" onClick={() => toast.success("证明材料（示意）")}>证明材料</Button>
+        </div>
+        <ul className="space-y-2">
+          {items.map((item, i) => (
+            <li key={i} className="tender-fixed-label rounded-[8px] border border-[#E4E7ED] px-3 py-2 text-sm text-[#303133]">{item}</li>
+          ))}
+        </ul>
+      </div>
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
+/** 招标文件审查：子项 条款风险/公平性审查风险 */
+function TenderClausePanel() {
+  const [clauseSub, setClauseSub] = useState<"term" | "fair">("term");
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <div className="flex flex-col rounded-[8px] border border-[#E4E7ED] bg-white">
+        <p className="mb-3 text-xs text-[#909399]">以下内容由AI生成，内容仅供参考，请仔细甄别。</p>
+        <Tabs value={clauseSub} onValueChange={(v) => setClauseSub(v as "term" | "fair")} className="flex-1">
+          <TabsList className="mb-3 w-full justify-start rounded-[8px] bg-[#F0F2F5] p-1">
+            <TabsTrigger value="term" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">条款风险(6)处</TabsTrigger>
+            <TabsTrigger value="fair" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">公平性审查风险(4)处</TabsTrigger>
+          </TabsList>
+          <TabsContent value="term" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">保证金风险</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>退还风险</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>没收风险</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">付款条件风险</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>价格风险</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>付款时间风险</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">知识产权风险</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>知识产权风险</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">工期风险</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>工期风险</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+          <TabsContent value="fair" className="mt-0 space-y-4">
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">准入公平性审查</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>特定地区/行业证书要求</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">得分公平性审查</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>联合体差异性得分</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">信用公平性审查</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell>信用信息区别规定</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>限制使用信用评价</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                    <TableRow><TableCell>信用评价标准差异</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+            <div>
+              <p className="tender-fixed-label mb-2 text-sm">定标公平性审查</p>
+              <div className="overflow-x-auto rounded-[8px] border border-[#E4E7ED]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="tender-fixed-label text-[#303133]">标题</TableHead>
+                      <TableHead className="tender-fixed-label text-[#303133]">内容</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow><TableCell className="text-[#909399]">—</TableCell><TableCell className="text-[#909399]">—</TableCell></TableRow>
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+      <TenderDocOutlinePanel />
+    </div>
+  );
+}
+
 function TenderPage({
   uploadedTender,
   onUploadTender,
@@ -1377,6 +2281,8 @@ function TenderPage({
   isParsing,
   onParse,
   onGoCompliance,
+  onNextStep,
+  onAnalysisComplete,
 }: {
   uploadedTender: { name: string; size: string; format: string } | null;
   onUploadTender: (v: { name: string; size: string; format: string }) => void;
@@ -1384,111 +2290,82 @@ function TenderPage({
   isParsing: boolean;
   onParse: () => void;
   onGoCompliance: () => void;
+  onNextStep: () => void;
+  onAnalysisComplete: (requirements: TenderRequirement[]) => void;
 }) {
-  const [outlineText, setOutlineText] = useState("投标大纲：\n1. 商务响应要求...\n2. 技术响应要求...\n3. 评分项对应策略...");
-  const [localFilePreview, setLocalFilePreview] = useState("");
-  const uploadRef = useRef<HTMLInputElement | null>(null);
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">招标文件上传（优化版）</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="text-xs text-slate-500">仅支持上传 1 个 Word 文件</div>
-          <input
-            ref={uploadRef}
-            type="file"
-            accept=".doc,.docx"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              onUploadTender({ name: file.name, size: `${(file.size / 1024 / 1024).toFixed(2)}MB`, format: file.name.split(".").pop()?.toUpperCase() || "DOCX" });
-              const reader = new FileReader();
-              reader.onload = () => setLocalFilePreview(String(reader.result ?? "").slice(0, 200));
-              reader.readAsText(file);
-              toast.success(`已读取本地文件：${file.name}`);
-            }}
-          />
-          <div className="rounded-lg border border-dashed bg-slate-100/70 p-8 text-center backdrop-blur">
-            <UploadCloud className="mx-auto mb-2 h-8 w-8 text-[#1B365D]" />
-            <p className="text-sm text-slate-600">点击“上传文件”选择本地单个 Word 文件</p>
-            <Button
-              className="mt-3 bg-[#1B365D] hover:bg-[#10253f]"
-              onClick={() => uploadRef.current?.click()}
-            >
-              上传文件
-            </Button>
-          </div>
-          {localFilePreview && (
-            <div className="rounded border bg-slate-50 p-2 text-xs text-slate-600">
-              本地文件预览（前200字符）：{localFilePreview || "无法预览该文件内容"}
-            </div>
-          )}
-          {uploadedTender && (
-            <div className="flex items-center justify-between rounded border bg-white p-3 text-sm">
-              <span>
-                已上传：{uploadedTender.name} · {uploadedTender.size} · {uploadedTender.format}
-              </span>
-              <Button onClick={onParse}>解析</Button>
-            </div>
-          )}
-          {(isParsing || parseProgress > 0) && (
-            <div>
-              <p className="mb-1 text-xs text-slate-500">解析进度：{parseProgress}%</p>
-              <div className="h-2 rounded bg-slate-200">
-                <div className="h-2 rounded bg-blue-600 transition-all" style={{ width: `${parseProgress}%` }} />
-              </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
       <Card>
         <CardHeader>
           <CardTitle className="text-base">智能读标结果</CardTitle>
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="req">
-            <TabsList className="grid w-full grid-cols-7">
-              <TabsTrigger value="req">需求清单</TabsTrigger>
-              <TabsTrigger value="score">评分表</TabsTrigger>
-              <TabsTrigger value="risk">废标条款</TabsTrigger>
-              <TabsTrigger value="pay">付款条件</TabsTrigger>
-              <TabsTrigger value="liability">违约责任</TabsTrigger>
-              <TabsTrigger value="contract">合同条款</TabsTrigger>
-              <TabsTrigger value="outline">投标大纲</TabsTrigger>
+          <div className="mb-4">
+            <TenderAnalyzer onAnalysisComplete={onAnalysisComplete} />
+          </div>
+          <Tabs defaultValue="basic" className="w-full">
+            <TabsList className="inline-flex h-9 w-full flex-wrap justify-start gap-1 rounded-[8px] bg-[#F0F2F5] p-1">
+              <TabsTrigger value="basic" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">基础信息</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
+              <TabsTrigger value="qualify" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">资格要求</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
+              <TabsTrigger value="review" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">评审要求</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
+              <TabsTrigger value="bidDoc" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">投标文件要求</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
+              <TabsTrigger value="invalid" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">无效标与废标项</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
+              <TabsTrigger value="submit" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">应标需提交文件</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
+              <TabsTrigger value="clause" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">
+                <span className="mr-1.5">招标文件审查</span>
+                <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />
+              </TabsTrigger>
             </TabsList>
-            <TabsContent value="req" className="mt-3 rounded border bg-yellow-50 p-3 text-sm">
-              识别需求 42 项，支持复制与导出需求清单。
+
+            {/* 基础信息：左半边结构化信息 + 右半边招标原文 */}
+            <TabsContent value="basic" className="mt-4">
+              <TenderBasicInfoPanel />
             </TabsContent>
-            <TabsContent value="score" className="mt-3 rounded border bg-amber-50 p-3 text-sm">
-              关键评分项 13 项，建议重点优化“实施团队经验”。
+            <TabsContent value="qualify" className="mt-4">
+              <TenderQualifyPanel />
             </TabsContent>
-            <TabsContent value="risk" className="mt-3 rounded border bg-red-50 p-3 text-sm">
-              发现高风险废标条款 4 项，请逐项对标核查。
+            <TabsContent value="review" className="mt-4">
+              <TenderReviewPanel />
             </TabsContent>
-            <TabsContent value="pay" className="mt-3 rounded border p-3 text-sm">
-              付款条件：里程碑验收后分阶段支付。
+            <TabsContent value="bidDoc" className="mt-4">
+              <TenderBidDocPanel />
             </TabsContent>
-            <TabsContent value="liability" className="mt-3 rounded border p-3 text-sm">
-              违约责任：交付延期与质量问题责任约定。
+            <TabsContent value="invalid" className="mt-4">
+              <TenderInvalidPanel />
             </TabsContent>
-            <TabsContent value="contract" className="mt-3 rounded border p-3 text-sm">
-              合同条款：知识产权、保密、争议解决等条款。
+            <TabsContent value="submit" className="mt-4">
+              <TenderSubmitPanel />
             </TabsContent>
-            <TabsContent value="outline" className="mt-3 space-y-2 rounded border p-3 text-sm">
-              <textarea className="h-32 w-full rounded border p-2 text-xs" value={outlineText} onChange={(e) => setOutlineText(e.target.value)} />
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => toast.success("投标大纲已保存")}>保存</Button>
-                <Button size="sm" variant="outline" onClick={() => setOutlineText("投标大纲：\n1. 商务响应要求...\n2. 技术响应要求...\n3. 评分项对应策略...")}>重置</Button>
-                <Button size="sm" variant="outline" onClick={() => toast.success("已打开投标大纲预览（示意）")}>预览</Button>
-                <Button size="sm" variant="outline" onClick={() => navigator.clipboard?.writeText(outlineText).then(() => toast.success("已复制投标大纲")).catch(() => toast.error("复制失败"))}>复制</Button>
-                <Button size="sm" variant="outline" onClick={() => toast.success("投标大纲已导出（示意）")}>导出</Button>
-              </div>
+            <TabsContent value="clause" className="mt-4">
+              <TenderClausePanel />
             </TabsContent>
           </Tabs>
+          <div className="mt-4 flex items-center justify-between border-t border-[#E4E7ED] pt-4">
+            <Button variant="outline" className="rounded-[8px]" onClick={() => toast.success("已导出解析报告（示意）")}>
+              导出解析报告
+            </Button>
+            <Button className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]" onClick={onNextStep}>
+              下一步
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -1508,37 +2385,104 @@ function TenderPage({
   );
 }
 
-function ProposalPage() {
+function ProposalPage({
+  projectContext,
+  onProjectContextUpdate,
+}: {
+  projectContext: ProjectContext;
+  onProjectContextUpdate: (next: Partial<ProjectContext>) => void;
+}) {
   const flatSections = proposalOutline.flatMap((g) => g.sections.map((s) => `${g.group}::${s.name}`));
   const [selectedGroup, setSelectedGroup] = useState(proposalOutline[0].group);
   const [selectedSection, setSelectedSection] = useState(proposalOutline[0].sections[0].name);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [otherFileUploaded, setOtherFileUploaded] = useState(false);
-  const [positioning, setPositioning] = useState("银行监管报送平台-技术标");
+  const [proposalSearch, setProposalSearch] = useState("");
+  const [proposalTab, setProposalTab] = useState<"tech" | "biz">("tech");
   const [completedSections, setCompletedSections] = useState<string[]>([]);
+  const [projectOutline, setProjectOutline] = useState(projectContext.tenderOutline);
   const selectedDetail =
     proposalOutline.find((g) => g.group === selectedGroup)?.sections.find((s) => s.name === selectedSection)?.detail ??
     "";
 
+  useEffect(() => {
+    setProjectOutline(projectContext.tenderOutline);
+  }, [projectContext.tenderOutline]);
+
+  useEffect(() => {
+    onProjectContextUpdate({
+      proposalCompletedSections: completedSections.length,
+      proposalTotalSections: flatSections.length,
+    });
+  }, [completedSections, flatSections.length, onProjectContextUpdate]);
+
   return (
     <div className="space-y-4">
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">模板选择（优化版）</CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 gap-3">
-          <div className="grid grid-cols-[120px_1fr] items-center gap-2">
-            <p className="text-sm font-medium">标书定位</p>
-            <Input value={positioning} onChange={(e) => setPositioning(e.target.value)} placeholder="选择或搜索本次标书" />
+        <CardContent className="flex flex-wrap items-center gap-3 pt-6">
+          <Input
+            value={proposalSearch}
+            onChange={(e) => setProposalSearch(e.target.value)}
+            placeholder="搜索标书、模板、项目..."
+            className="max-w-md rounded-[8px] border-[#E4E7ED]"
+          />
+          <Button variant="outline" className="rounded-[8px] border-[#E4E7ED]" onClick={() => toast.success("查询（示意）")}>
+            查询
+          </Button>
+          <Button
+            className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]"
+            onClick={() => {
+              onProjectContextUpdate({ tenderOutline: projectOutline || "（AI 生成大纲将在此展示）" });
+              toast.success("已生成 AI 大纲");
+            }}
+          >
+            AI 生成大纲
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="space-y-4 pt-6">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-sm text-[#909399]">项目编号：—</span>
+            <span className="text-sm font-medium text-[#303133]">金额：—</span>
           </div>
-          {["中软融鑫定制模版-实施", "中软融鑫定制模版-产品销售"].map((item) => (
-            <div key={item} className="rounded border bg-white p-3">
-              <p className="font-medium">{item}</p>
-              <Button size="sm" className="mt-2" onClick={() => toast.success(`已预览并应用模板：${item}`)}>
-                预览并使用
+          <Tabs value={proposalTab} onValueChange={(v) => setProposalTab(v as "tech" | "biz")} className="w-full">
+            <TabsList className="rounded-[8px] bg-[#F0F2F5] p-1">
+              <TabsTrigger value="tech" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">技术标</TabsTrigger>
+              <TabsTrigger value="biz" className="rounded-[8px] data-[state=active]:bg-[#165DFF] data-[state=active]:text-white">商务标</TabsTrigger>
+            </TabsList>
+            <p className="mt-2 text-xs text-red-600">以下内容由 AI 生成，内容仅供参考，请仔细甄别。生成内容将根据输出字数计费，图表不计入字数。</p>
+            <TabsContent value="tech" className="mt-4 space-y-4">
+              <div>
+                <p className="tender-fixed-label mb-1 text-sm">招标文件项目需求</p>
+                <div className="min-h-[80px] rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] p-3 text-sm text-[#909399]">待生成…</div>
+              </div>
+              <div>
+                <p className="tender-fixed-label mb-2 text-sm">评审标准</p>
+                <ul className="space-y-2 rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] p-4 text-sm text-[#606266]">
+                  <li><span className="font-medium text-[#303133]">技术评分(30分)：</span> 系统功能方案(10分)、系统技术方案(20分) 等，由 AI 解析后填充。</li>
+                  <li><span className="font-medium text-[#303133]">商务评分：</span> —</li>
+                </ul>
+              </div>
+              <Button className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]" onClick={() => toast.success("生成技术标目录（示意）")}>
+                生成技术标目录
               </Button>
-            </div>
-          ))}
+            </TabsContent>
+            <TabsContent value="biz" className="mt-4 space-y-4">
+              <div>
+                <p className="tender-fixed-label mb-1 text-sm">招标文件项目需求</p>
+                <div className="min-h-[80px] rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] p-3 text-sm text-[#909399]">待生成…</div>
+              </div>
+              <div>
+                <p className="tender-fixed-label mb-2 text-sm">评审标准</p>
+                <div className="rounded-[8px] border border-[#E4E7ED] bg-[#FAFAFA] p-3 text-sm text-[#909399]">—</div>
+              </div>
+              <Button className="rounded-[8px] bg-[#165DFF] hover:bg-[#0F42C1]" onClick={() => toast.success("生成商务标（示意）")}>
+                下一步
+              </Button>
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
 
@@ -1692,92 +2636,689 @@ function ProposalPage() {
   );
 }
 
-function CollaborationPage({ role }: { role: Role }) {
+/** 个人中心：已完成任务、代办任务，均可跳转至项目协作 */
+function PersonalCenterPage({
+  onGoToCompleted,
+  onGoToPending,
+}: {
+  onGoToCompleted: () => void;
+  onGoToPending: () => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">个人中心</CardTitle>
+          <p className="text-sm text-[#909399]">查看并跳转至已完成任务或代办任务</p>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => {
+              onGoToCompleted();
+              toast.success("已跳转至项目协作");
+            }}
+            className="flex items-center gap-4 rounded-[12px] border border-[#E4E7ED] bg-white p-5 text-left transition-colors hover:border-[#165DFF] hover:bg-[#F5F9FF]"
+          >
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[10px] bg-green-50">
+              <CheckCircle2 className="h-6 w-6 text-green-600" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-[#303133]">已完成任务</p>
+              <p className="mt-0.5 text-xs text-[#909399]">查看已完成的标书与协作任务，跳转至项目协作</p>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              onGoToPending();
+              toast.success("已跳转至项目协作");
+            }}
+            className="flex items-center gap-4 rounded-[12px] border border-[#E4E7ED] bg-white p-5 text-left transition-colors hover:border-[#165DFF] hover:bg-[#F5F9FF]"
+          >
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[10px] bg-[#E8F0FF]">
+              <ListChecks className="h-6 w-6 text-[#165DFF]" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium text-[#303133]">代办任务</p>
+              <p className="mt-0.5 text-xs text-[#909399]">查看待办与进行中的任务，跳转至项目协作</p>
+            </div>
+          </button>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function CollaborationPage({ role, projectContext }: { role: Role; projectContext: ProjectContext }) {
+  type CollaborationTaskStatus = "待分配" | "进行中" | "已完成" | "已驳回";
+  type Urgency = "高" | "中" | "低";
+  type TaskAssignment = {
+    userName: string;
+    department: string;
+    roleName: string;
+    assignedAt: string;
+    progress: string;
+  };
+  type TaskHistory = {
+    at: string;
+    status: string;
+    note: string;
+    operator: string;
+  };
+  type CollaborationTask = {
+    id: string;
+    name: string;
+    projectName: string;
+    taskType: string;
+    requirement: string;
+    createdAt: string;
+    urgency: Urgency;
+    sectionKey: string;
+    status: CollaborationTaskStatus;
+    assignments: TaskAssignment[];
+    history: TaskHistory[];
+  };
+  type Staff = {
+    id: string;
+    name: string;
+    department: string;
+    role: string;
+  };
+
+  const can = roleActionPermissions[role];
+  const isAdmin = role === "管理员";
+  const [now, setNow] = useState(new Date());
+  const [taskSearch, setTaskSearch] = useState("");
+  const [staffSearch, setStaffSearch] = useState("");
+  const [selectedTaskId, setSelectedTaskId] = useState<string>("");
+  const [selectedStaffId, setSelectedStaffId] = useState("");
+  const [selectedRoleName, setSelectedRoleName] = useState("技术标制作人");
+  const [customRole, setCustomRole] = useState("");
   const [rejectReason, setRejectReason] = useState("");
   const [rejectOpen, setRejectOpen] = useState(false);
-  const [selectedFlow, setSelectedFlow] = useState("招标文件解析");
-  const flowItems = [
-    "招标文件解析",
-    "人员分配",
-    "分配人员完成情况",
-    "商务标完成状态",
-    "技术标完成状态",
-    "审查结果",
-    "标书定版状态",
-  ];
+  const [peoplePanelOpen, setPeoplePanelOpen] = useState(true);
+  const [roles, setRoles] = useState<string[]>([
+    "技术标制作人",
+    "商务制作人",
+    "初审人员",
+    "复审人员",
+    "机动人员",
+  ]);
+  const [staff] = useState<Staff[]>([
+    { id: "u1", name: "周芷若", department: "交付一部", role: "技术标制作人" },
+    { id: "u2", name: "王芳", department: "商务中心", role: "商务制作人" },
+    { id: "u3", name: "赵强", department: "质量管理部", role: "初审人员" },
+    { id: "u4", name: "李宁", department: "质量管理部", role: "复审人员" },
+    { id: "u5", name: "陈涛", department: "交付二部", role: "机动人员" },
+  ]);
+  const [notificationLogs, setNotificationLogs] = useState<string[]>([]);
+  const [tasks, setTasks] = useState<CollaborationTask[]>([
+    {
+      id: "t-1",
+      name: "标书制作人员分配",
+      projectName: projectContext.projectName,
+      taskType: "人员分配",
+      requirement: "为当前标书项目分配技术标/商务标制作人员。",
+      createdAt: "2026-03-09 09:30:00",
+      urgency: "高",
+      sectionKey: "标书制作人员分配",
+      status: "待分配",
+      assignments: [],
+      history: [{ at: "2026-03-09 09:30:00", status: "任务待分配", note: "任务创建", operator: "系统" }],
+    },
+    {
+      id: "t-audit",
+      name: "标书审核任务",
+      projectName: projectContext.projectName,
+      taskType: "审核",
+      requirement: "对已提交的标书进行审核，可审核通过或驳回。",
+      createdAt: "2026-03-09 09:35:00",
+      urgency: "高",
+      sectionKey: "标书审核任务",
+      status: "待分配",
+      assignments: [],
+      history: [{ at: "2026-03-09 09:35:00", status: "任务待分配", note: "任务创建", operator: "系统" }],
+    },
+    {
+      id: "t-2",
+      name: "商务标-商务承诺",
+      projectName: projectContext.projectName,
+      taskType: "章节编写",
+      requirement: "补全付款、违约责任、质保承诺，保持条款一致性。",
+      createdAt: "2026-03-09 09:45:00",
+      urgency: "中",
+      sectionKey: "二、商务标::商务承诺",
+      status: "进行中",
+      assignments: [
+        {
+          userName: "王芳",
+          department: "商务中心",
+          roleName: "商务制作人",
+          assignedAt: "2026-03-09 10:00:00",
+          progress: "65%",
+        },
+      ],
+      history: [
+        { at: "2026-03-09 09:45:00", status: "任务待分配", note: "任务创建", operator: "系统" },
+        { at: "2026-03-09 10:00:00", status: "任务进行中", note: "分配给 王芳（商务制作人）", operator: "管理员" },
+      ],
+    },
+    {
+      id: "t-3",
+      name: "资信标-资格证明文件",
+      projectName: projectContext.projectName,
+      taskType: "资料准备",
+      requirement: "完成营业执照、资质证书、信用证明上传与核验。",
+      createdAt: "2026-03-09 10:05:00",
+      urgency: "高",
+      sectionKey: "一、资信标::资格证明文件",
+      status: "已驳回",
+      assignments: [
+        {
+          userName: "周芷若",
+          department: "交付一部",
+          roleName: "技术标制作人",
+          assignedAt: "2026-03-09 10:10:00",
+          progress: "45%",
+        },
+      ],
+      history: [
+        { at: "2026-03-09 10:05:00", status: "任务待分配", note: "任务创建", operator: "系统" },
+        { at: "2026-03-09 10:10:00", status: "任务进行中", note: "分配给 周芷若（技术标制作人）", operator: "管理员" },
+        { at: "2026-03-09 11:20:00", status: "审查驳回", note: "信用证明截图缺失，需补齐并重新提交。", operator: "初审人员" },
+      ],
+    },
+  ]);
+  const [selectedStaffForPanel, setSelectedStaffForPanel] = useState<string>(staff[0].id);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatDateTime = (d: Date) => {
+    const pad = (v: number) => `${v}`.padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(
+      d.getSeconds(),
+    )}`;
+  };
+
+  const statusVisual: Record<string, { text: string; colorClass: string }> = {
+    资料上传成功: { text: "✅ 资料上传成功", colorClass: "text-green-700 bg-green-50 border-green-200" },
+    标书提交成功: { text: "📤 标书提交成功", colorClass: "text-green-700 bg-green-50 border-green-200" },
+    审查驳回: { text: "❌ 审查驳回", colorClass: "text-red-700 bg-red-50 border-red-200" },
+    登录失败: { text: "🔒 登录失败", colorClass: "text-red-700 bg-red-50 border-red-200" },
+    简历信息提取完成: { text: "📊 简历信息提取完成", colorClass: "text-green-700 bg-green-50 border-green-200" },
+    任务待分配: { text: "⏳ 任务待分配", colorClass: "text-blue-700 bg-blue-50 border-blue-200" },
+    任务进行中: { text: "🔄 任务进行中", colorClass: "text-blue-700 bg-blue-50 border-blue-200" },
+    任务已完成: { text: "✅ 任务已完成", colorClass: "text-green-700 bg-green-50 border-green-200" },
+  };
+
+  const urgencyWeight: Record<Urgency, number> = { 高: 3, 中: 2, 低: 1 };
+  const sortedPendingTasks = useMemo(
+    () =>
+      tasks
+        .filter((t) => t.status === "待分配")
+        .filter((t) => `${t.name}${t.projectName}${t.taskType}`.includes(taskSearch))
+        .sort((a, b) => urgencyWeight[b.urgency] - urgencyWeight[a.urgency]),
+    [taskSearch, tasks],
+  );
+
+  const selectedTask = tasks.find((t) => t.id === selectedTaskId) ?? null;
+  const filteredStaff = staff.filter((s) => `${s.name}${s.role}`.includes(staffSearch));
+  const selectedStaff = staff.find((s) => s.id === selectedStaffId) ?? null;
+  const panelStaff = staff.find((s) => s.id === selectedStaffForPanel) ?? staff[0];
+
+  const myNameByRole: Record<Role, string> = {
+    管理员: "admin",
+    技术标制作人: "周芷若",
+    商务制作人: "王芳",
+    机动人员: "陈涛",
+    初审人员: "赵强",
+    复审人员: "李宁",
+  };
+  const myTasks = tasks.filter((t) => t.assignments.some((a) => a.userName === myNameByRole[role]));
+
+  const pushNotification = (text: string) => {
+    setNotificationLogs((prev) => [`${formatDateTime(new Date())} ${text}`, ...prev].slice(0, 30));
+  };
+
+  const updateTask = (taskId: string, next: (task: CollaborationTask) => CollaborationTask) => {
+    setTasks((prev) => prev.map((task) => (task.id === taskId ? next(task) : task)));
+  };
+
+  const handleAssign = () => {
+    if (!can.assignTask) {
+      toast.error("当前角色无任务分配权限");
+      return;
+    }
+    if (!selectedTask || !selectedStaff || !selectedRoleName) {
+      toast.error("请先选择任务、人员和角色");
+      return;
+    }
+    const assignedAt = formatDateTime(new Date());
+    updateTask(selectedTask.id, (task) => {
+      const filtered = task.assignments.filter((a) => a.userName !== selectedStaff.name);
+      return {
+        ...task,
+        status: "进行中",
+        assignments: [
+          ...filtered,
+          {
+            userName: selectedStaff.name,
+            department: selectedStaff.department,
+            roleName: selectedRoleName,
+            assignedAt,
+            progress: "0%",
+          },
+        ],
+        history: [
+          ...task.history,
+          {
+            at: assignedAt,
+            status: "任务进行中",
+            note: `分配给 ${selectedStaff.name}（${selectedRoleName}）`,
+            operator: "管理员",
+          },
+        ],
+      };
+    });
+    pushNotification(`任务通知已发送给 ${selectedStaff.name}：${selectedTask.name}`);
+    toast.success("确认分配成功，任务状态已更新并通知人员");
+  };
+
+  const handleApprove = () => {
+    if (!can.reviewTask || !selectedTask) {
+      toast.error("当前角色无审查权限或未选择任务");
+      return;
+    }
+    const nowText = formatDateTime(new Date());
+    updateTask(selectedTask.id, (task) => ({
+      ...task,
+      status: "已完成",
+      assignments: task.assignments.map((a) => ({ ...a, progress: "100%" })),
+      history: [
+        ...task.history,
+        {
+          at: nowText,
+          status: "任务已完成",
+          note: "审查通过，流转至下一节点",
+          operator: role,
+        },
+        {
+          at: nowText,
+          status: "标书提交成功",
+          note: "章节内容已归档",
+          operator: "系统",
+        },
+      ],
+    }));
+    toast.success("任务已审查通过");
+  };
+
+  const handleReject = () => {
+    if (!can.reviewTask || !selectedTask) {
+      toast.error("当前角色无审查权限或未选择任务");
+      return;
+    }
+    if (!rejectReason.trim()) {
+      toast.error("请填写驳回原因");
+      return;
+    }
+    const nowText = formatDateTime(new Date());
+    updateTask(selectedTask.id, (task) => ({
+      ...task,
+      status: "已驳回",
+      history: [
+        ...task.history,
+        {
+          at: nowText,
+          status: "审查驳回",
+          note: rejectReason.trim(),
+          operator: role,
+        },
+      ],
+    }));
+    setRejectReason("");
+    setRejectOpen(false);
+    toast.success("已驳回并记录留痕");
+  };
+
+  const addCustomRole = () => {
+    const trimmed = customRole.trim();
+    if (!trimmed) {
+      return;
+    }
+    if (!roles.includes(trimmed)) {
+      setRoles((prev) => [...prev, trimmed]);
+      setSelectedRoleName(trimmed);
+    }
+    setCustomRole("");
+  };
+
+  const staffTasks = tasks.filter((task) => task.assignments.some((a) => a.userName === panelStaff.name));
+  const groupedStaffTasks: Record<string, CollaborationTask[]> = {
+    待完成: staffTasks.filter((t) => t.status === "待分配"),
+    进行中: staffTasks.filter((t) => t.status === "进行中"),
+    已完成: staffTasks.filter((t) => t.status === "已完成"),
+    已驳回: staffTasks.filter((t) => t.status === "已驳回"),
+  };
+
+  if (!isAdmin) {
+    return (
+      <div className="space-y-4">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">项目协作（我的任务）</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-xs text-slate-600">
+              当前角色：{role}。仅展示本人被分配任务，无任务分配与人员管理权限。
+            </p>
+            {myTasks.length === 0 ? (
+              <div className="rounded border bg-slate-50 p-4 text-sm text-slate-500">当前暂无分配给你的任务。</div>
+            ) : (
+              myTasks.map((task) => {
+                const statusKey =
+                  task.status === "待分配"
+                    ? "任务待分配"
+                    : task.status === "进行中"
+                      ? "任务进行中"
+                      : task.status === "已完成"
+                        ? "任务已完成"
+                        : "审查驳回";
+                const visual = statusVisual[statusKey];
+                return (
+                  <div key={task.id} className="rounded border bg-white p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="font-medium text-sm">{task.name}</p>
+                      <span className={`rounded border px-2 py-1 text-xs ${visual.colorClass}`}>{visual.text}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-slate-600">关联项目：{task.projectName}</p>
+                    <p className="text-xs text-slate-600">任务要求：{task.requirement}</p>
+                  </div>
+                );
+              })
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="text-base">项目协作（当前角色：{role}）</CardTitle>
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => toast.success("已打开新建项目窗口（示意）")}>新建项目</Button>
-              <Button size="sm" variant="outline" onClick={() => toast.success("已打开项目筛选条件（示意）")}>
-                项目筛选
-              </Button>
-              <Button size="sm" onClick={() => toast.success("已打开任务分发面板（示意）")}>任务分发</Button>
-            </div>
+            <CardTitle className="text-base">项目协助中心（管理员视角）</CardTitle>
+            <Badge variant="outline">当前系统时间：{formatDateTime(now)}</Badge>
           </div>
         </CardHeader>
-        <CardContent className="grid grid-cols-[15%_85%] gap-3">
-          <Card className="h-[260px]">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs">已完成任务</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-1 text-xs">
-              {flowItems.map((item) => (
-                <button
-                  key={item}
-                  className={`block w-full rounded px-1 py-1 text-left ${
-                    selectedFlow === item ? "bg-blue-100 text-blue-700" : "hover:bg-slate-100"
-                  }`}
-                  onClick={() => setSelectedFlow(item)}
-                >
-                  {item}
-                </button>
-              ))}
-            </CardContent>
-          </Card>
+        <CardContent className="grid grid-cols-[68%_32%] gap-4">
+          <div className="space-y-4">
+            {can.viewPending && (
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CardTitle className="text-sm">待处理任务（按紧急程度排序）</CardTitle>
+                    <Input
+                      className="h-8 w-56"
+                      placeholder="搜索任务名称/ID/类型"
+                      value={taskSearch}
+                      onChange={(e) => setTaskSearch(e.target.value)}
+                    />
+                    <Button variant="outline" size="sm" className="h-8" onClick={() => toast.success("查询（示意）")}>
+                      查询
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {sortedPendingTasks.length === 0 ? (
+                    <div className="rounded border bg-slate-50 p-3 text-xs text-slate-500">暂无待分配任务。</div>
+                  ) : (
+                    sortedPendingTasks.map((task) => (
+                      <div key={task.id} className="flex items-center justify-between rounded border bg-white p-3 text-sm">
+                        <div>
+                          <p className="font-medium">{task.name}</p>
+                          <p className="mt-1 text-xs text-slate-600">
+                            关联项目：{task.projectName} ｜ 类型：{task.taskType} ｜ 创建：{task.createdAt} ｜ 紧急：{task.urgency}
+                          </p>
+                        </div>
+                        <Button
+                          className="bg-blue-600 hover:bg-blue-700"
+                          onClick={() => {
+                            setSelectedTaskId(task.id);
+                            setPeoplePanelOpen(true);
+                          }}
+                        >
+                          处理
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </CardContent>
+              </Card>
+            )}
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">任务处理与分配</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {!selectedTask ? (
+                  <div className="rounded border border-dashed bg-slate-50 p-6 text-sm text-slate-500">
+                    请从上方待处理任务中点击“处理”，进入任务分配页面。
+                  </div>
+                ) : selectedTask.id === "t-audit" ? (
+                  <>
+                    <div className="rounded border bg-slate-50 p-3 text-xs">
+                      <p className="font-semibold text-slate-700">当前处理任务：标书审核任务</p>
+                      <p className="mt-1">任务名称：{selectedTask.name}</p>
+                      <p>关联项目：{selectedTask.projectName}</p>
+                      <p>系统时间：{formatDateTime(now)}</p>
+                    </div>
+                    <div className="rounded border bg-white p-4 text-sm">
+                      <p className="font-semibold text-slate-700 mb-2">已提交的任务</p>
+                      <div className="space-y-2 rounded border border-dashed bg-slate-50 p-3 text-xs text-slate-600">
+                        <p>· 技术标-总体技术方案（待审核）</p>
+                        <p>· 商务标-商务承诺（待审核）</p>
+                      </div>
+                      <div className="mt-4 flex gap-2">
+                        <Button className="bg-green-600 hover:bg-green-700" onClick={() => { toast.success("审核通过"); updateTask("t-audit", (t) => ({ ...t, status: "已完成" })); setSelectedTaskId(""); }}>
+                          审核通过
+                        </Button>
+                        <Button variant="outline" className="border-red-300 text-red-700 hover:bg-red-50" onClick={() => { setRejectOpen(true); }}>
+                          审核驳回
+                        </Button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="rounded border bg-slate-50 p-3 text-xs">
+                      <p className="font-semibold text-slate-700">当前处理任务详情</p>
+                      <p className="mt-1">任务名称：{selectedTask.name}</p>
+                      <p>关联项目：{selectedTask.projectName}</p>
+                      <p>任务要求：{selectedTask.requirement}</p>
+                      <p>系统时间：{formatDateTime(now)}</p>
+                    </div>
+
+                    <div className="grid grid-cols-[35%_65%] gap-3">
+                      <div className="space-y-2 rounded border bg-white p-3 text-xs">
+                        <p className="font-semibold text-slate-700">任务状态展示区</p>
+                        <p>
+                          当前状态：
+                          <span className="ml-1 rounded border px-2 py-0.5 text-[11px]">
+                            {selectedTask.status === "待分配"
+                              ? "⏳ 任务待分配"
+                              : selectedTask.status === "进行中"
+                                ? "🔄 任务进行中"
+                                : selectedTask.status === "已完成"
+                                  ? "✅ 任务已完成"
+                                  : "❌ 审查驳回"}
+                          </span>
+                        </p>
+                        <p>
+                          分配进度：{selectedTask.assignments.length > 0 ? `${selectedTask.assignments.length} 人已分配` : "未分配"}
+                        </p>
+                        <div className="space-y-1">
+                          {selectedTask.assignments.map((a) => (
+                            <div key={`${a.userName}-${a.roleName}`} className="rounded bg-slate-50 p-2">
+                              <p>{a.userName} / {a.roleName}</p>
+                              <p className="text-slate-500">进度 {a.progress} ｜ {a.assignedAt}</p>
+                            </div>
+                          ))}
+                        </div>
+                        <div className="rounded border bg-slate-50 p-2">
+                          <p className="font-medium text-slate-600">任务完成状态留痕</p>
+                          <div className="mt-1 max-h-36 space-y-1 overflow-y-auto">
+                            {selectedTask.history.map((h, idx) => {
+                              const visual = statusVisual[h.status] ?? statusVisual["任务进行中"];
+                              return (
+                                <p key={`${h.at}-${idx}`} className={`rounded border px-2 py-1 ${visual.colorClass}`}>
+                                  {h.at} ｜ {h.operator} ｜ {visual.text} ｜ {h.note}
+                                </p>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-3 rounded border bg-white p-3 text-xs">
+                        <p className="font-semibold text-slate-700">任务分配操作区</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Input
+                            placeholder="搜索人员（姓名/角色）"
+                            value={staffSearch}
+                            onChange={(e) => setStaffSearch(e.target.value)}
+                          />
+                          <select
+                            className="h-9 rounded border px-2 text-sm"
+                            value={selectedStaffId}
+                            onChange={(e) => setSelectedStaffId(e.target.value)}
+                          >
+                            <option value="">选择人员</option>
+                            {filteredStaff.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name}（{p.role}）
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="grid grid-cols-[1fr_auto] gap-2">
+                          <select
+                            className="h-9 rounded border px-2 text-sm"
+                            value={selectedRoleName}
+                            onChange={(e) => setSelectedRoleName(e.target.value)}
+                          >
+                            {roles.map((r) => (
+                              <option key={r} value={r}>
+                                {r}
+                              </option>
+                            ))}
+                          </select>
+                          <Button variant="outline" onClick={addCustomRole}>新增自定义角色</Button>
+                        </div>
+                        <Input
+                          placeholder="输入自定义角色名称，例如：资料专员"
+                          value={customRole}
+                          onChange={(e) => setCustomRole(e.target.value)}
+                        />
+
+                        <div className="flex gap-2">
+                          <Button onClick={handleAssign}>确认分配</Button>
+                        </div>
+                        <p className="text-slate-500">分配成功后系统将自动向被分配人员发送任务通知。</p>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+
           <div className="space-y-3">
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">项目里程碑</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="h-2 rounded bg-slate-200">
-                  <div className="h-2 w-[68%] rounded bg-blue-600" />
-                </div>
-                <p className="mt-2 text-xs text-slate-600">当前进度 68%（可拖拽调整任务进度）</p>
-                <p className="mt-1 text-xs text-blue-700">当前联动节点：{selectedFlow}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">任务分配情况</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>角色</TableHead>
-                      <TableHead>负责人</TableHead>
-                      <TableHead>任务内容</TableHead>
-                      <TableHead>进度</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    <TableRow><TableCell>技术标制作人</TableCell><TableCell>周芷若</TableCell><TableCell>技术标编制</TableCell><TableCell>72%</TableCell></TableRow>
-                    <TableRow><TableCell>商务制作人</TableCell><TableCell>王芳</TableCell><TableCell>商务标编制</TableCell><TableCell>63%</TableCell></TableRow>
-                    <TableRow><TableCell>初审人员</TableCell><TableCell>赵强</TableCell><TableCell>初审校验</TableCell><TableCell>待开始</TableCell></TableRow>
-                  </TableBody>
-                </Table>
-                <div className="mt-3 flex gap-2">
-                  <Button size="sm" onClick={() => toast.success("审查通过，进入下一流程（示意）")}>审查通过</Button>
-                  <Button size="sm" variant="outline" onClick={() => setRejectOpen(true)}>
-                    审查不通过
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-sm">人员管理</CardTitle>
+                  <Button size="sm" variant="outline" onClick={() => setPeoplePanelOpen((v) => !v)}>
+                    {peoplePanelOpen ? "收起" : "展开"}
                   </Button>
                 </div>
+              </CardHeader>
+              {peoplePanelOpen && (
+                <CardContent className="space-y-2 text-xs">
+                  {!can.managePeople ? (
+                    <p className="text-slate-500">当前角色无人员管理权限。</p>
+                  ) : (
+                    <>
+                      <Input
+                        className="h-8"
+                        placeholder="搜索姓名或角色"
+                        value={staffSearch}
+                        onChange={(e) => setStaffSearch(e.target.value)}
+                      />
+                      <div className="max-h-48 space-y-1 overflow-y-auto">
+                        {filteredStaff.map((p) => (
+                          <button
+                            key={p.id}
+                            className={`block w-full rounded border px-2 py-2 text-left ${
+                              selectedStaffForPanel === p.id ? "border-blue-300 bg-blue-50" : "hover:bg-slate-50"
+                            }`}
+                            onClick={() => setSelectedStaffForPanel(p.id)}
+                          >
+                            <p className="font-medium">{p.name}</p>
+                            <p className="text-slate-500">{p.department} ｜ {p.role}</p>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="rounded border bg-slate-50 p-2">
+                        <p className="font-semibold text-slate-700">下属任务总览：{panelStaff.name}</p>
+                        {Object.entries(groupedStaffTasks).map(([groupName, groupTasks]) => (
+                          <div key={groupName} className="mt-2">
+                            <p className="text-slate-600">{groupName}（{groupTasks.length}）</p>
+                            <div className="mt-1 space-y-1">
+                              {groupTasks.length === 0 ? (
+                                <p className="text-slate-400">暂无任务</p>
+                              ) : (
+                                groupTasks.map((task) => (
+                                  <div key={task.id} className="rounded border bg-white p-2">
+                                    <p className="font-medium">{task.name}</p>
+                                    <p className="text-slate-500">分配时间：{task.assignments.find((a) => a.userName === panelStaff.name)?.assignedAt ?? "未分配"}</p>
+                                    <p className="text-slate-500">任务详情：{task.requirement}</p>
+                                    <p className="text-slate-500">当前进度：{task.assignments.find((a) => a.userName === panelStaff.name)?.progress ?? "0%"}</p>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              )}
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm">任务通知日志</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-1 text-xs">
+                {notificationLogs.length === 0 ? (
+                  <p className="text-slate-500">暂无通知记录</p>
+                ) : (
+                  notificationLogs.map((log) => (
+                    <p key={log} className="rounded border bg-slate-50 px-2 py-1">
+                      {log}
+                    </p>
+                  ))
+                )}
               </CardContent>
             </Card>
           </div>
@@ -1788,6 +3329,7 @@ function CollaborationPage({ role }: { role: Role }) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>填写驳回原因</DialogTitle>
+            <DialogDescription>驳回后将自动写入任务历史留痕。</DialogDescription>
           </DialogHeader>
           <textarea
             className="h-24 w-full rounded-md border p-2 text-sm"
@@ -1796,19 +3338,7 @@ function CollaborationPage({ role }: { role: Role }) {
             placeholder="请输入驳回原因..."
           />
           <DialogFooter>
-            <Button
-              onClick={() => {
-                if (!rejectReason.trim()) {
-                  toast.error("请填写驳回原因");
-                  return;
-                }
-                toast.success("已驳回并退回修改");
-                setRejectOpen(false);
-                setRejectReason("");
-              }}
-            >
-              提交
-            </Button>
+            <Button onClick={handleReject}>提交驳回</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1858,7 +3388,7 @@ function CompliancePage() {
   );
 }
 
-function DataCenterPage() {
+function DataCenterPage({ projectContext }: { projectContext: ProjectContext }) {
   const [reviewText, setReviewText] = useState("落标原因：评分项“交付周期”失分较多，后续需提前优化甘特图与资源计划。");
   const [compPrice, setCompPrice] = useState("");
   const [compAdv, setCompAdv] = useState("");
@@ -1888,6 +3418,10 @@ function DataCenterPage() {
             <CardTitle className="text-base">数据看板</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded border bg-slate-50 p-3 text-xs text-slate-700">
+              项目上下文：{projectContext.projectName}，招标要求 {projectContext.tenderRequirements.length} 条，
+              章节完成 {projectContext.proposalCompletedSections}/{projectContext.proposalTotalSections}
+            </div>
             <div className="rounded border bg-white p-3">
               <div className="mb-2 flex gap-2 text-xs">
                 <Badge variant="outline">历史项目总数</Badge>
@@ -2047,11 +3581,11 @@ function DataCenterPage() {
 
 function DataCard({ title, value, trend, color }: { title: string; value: string; trend: string; color: string }) {
   return (
-    <div className="rounded border bg-white p-3">
-      <p className="text-xs text-slate-500">{title}</p>
-      <p className="mt-1 text-xl font-bold">{value}</p>
+    <div className="rounded-[8px] bg-[#F0F2F5] p-3">
+      <p className="text-xs text-[#909399]">{title}</p>
+      <p className="mt-1 text-xl font-bold text-[#303133]">{value}</p>
       <div className="mt-2 flex items-center justify-between">
-        <span className="text-xs text-slate-500">{trend}</span>
+        <span className="text-xs text-[#909399]">{trend}</span>
         <div className="flex h-6 w-16 items-end gap-1">
           <span className={`h-2 w-2 rounded ${color}`} />
           <span className={`h-4 w-2 rounded ${color} opacity-80`} />
